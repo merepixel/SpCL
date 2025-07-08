@@ -54,6 +54,8 @@ class HybridMemory(nn.Module):
         inputs /= self.temp
         B = inputs.size(0)
 
+        device = inputs.device
+
         def masked_softmax(vec, mask, dim=1, epsilon=1e-6):
             exps = torch.exp(vec)
             masked_exps = exps * mask.float().clone()
@@ -63,10 +65,16 @@ class HybridMemory(nn.Module):
         targets = self.labels[indexes].clone()
         labels = self.labels.clone()
 
-        sim = torch.zeros(labels.max()+1, B).float().cuda()
+        #sim = torch.zeros(labels.max()+1, B).float().cuda()
+        sim  = torch.zeros(labels.max() + 1, B,  device=device)
         sim.index_add_(0, labels, inputs.t().contiguous())
-        nums = torch.zeros(labels.max()+1, 1).float().cuda()
-        nums.index_add_(0, labels, torch.ones(self.num_samples,1).float().cuda())
+
+        nums = torch.zeros(labels.max() + 1, 1,  device=device)
+        nums.index_add_(0, labels,
+                        torch.ones(self.num_samples, 1, device=device))
+        #nums = torch.zeros(labels.max()+1, 1).float().cuda()
+        #nums.index_add_(0, labels, torch.ones(self.num_samples,1).float().cuda())
+        
         mask = (nums>0).float()
         sim /= (mask*nums+(1-mask)).clone().expand_as(sim)
         mask = mask.expand_as(sim)

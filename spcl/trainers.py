@@ -84,7 +84,8 @@ class SpCLTrainer_UDA(object):
 
     def _parse_data(self, inputs):
         imgs, _, pids, _, indexes = inputs
-        return imgs.cuda(), pids.cuda(), indexes.cuda()
+        #return imgs.cuda(), pids.cuda(), indexes.cuda()
+        return imgs.cpu(), pids.cpu(), indexes.cpu()
 
     def _forward(self, inputs):
         return self.encoder(inputs)
@@ -96,7 +97,7 @@ class SpCLTrainer_USL(object):
         self.encoder = encoder
         self.memory = memory
 
-    def train(self, epoch, data_loader, optimizer, print_freq=10, train_iters=400):
+    def train(self, epoch, data_loader, optimizer, print_freq=1, train_iters=400):
         self.encoder.train()
 
         batch_time = AverageMeter()
@@ -141,7 +142,8 @@ class SpCLTrainer_USL(object):
 
     def _parse_data(self, inputs):
         imgs, _, pids, _, indexes = inputs
-        return imgs.cuda(), pids.cuda(), indexes.cuda()
+        #return imgs.cuda(), pids.cuda(), indexes.cuda()
+        return imgs.cpu(), pids.cpu(), indexes.cpu()
 
     def _forward(self, inputs):
         return self.encoder(inputs)
