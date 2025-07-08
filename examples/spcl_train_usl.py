@@ -127,7 +127,7 @@ def get_train_loader(args, dataset, height, width, batch_size, workers,
     train_loader = IterLoader(
                 DataLoader(Preprocessor(train_set, root=dataset.images_dir, transform=train_transformer),
                             batch_size=batch_size, num_workers=workers, sampler=sampler,
-                            shuffle=not rmgs_flag, pin_memory=True, drop_last=False), length=iters)
+                            shuffle=not rmgs_flag, pin_memory=False, drop_last=False), length=iters)
 
     return train_loader
 
@@ -149,7 +149,7 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
     test_loader = DataLoader(
         Preprocessor(testset, root=dataset.images_dir, transform=test_transformer),
         batch_size=batch_size, num_workers=workers,
-        shuffle=False, pin_memory=True)
+        shuffle=False, pin_memory=False)
 
     return test_loader
 
@@ -412,8 +412,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.00035,
                         help="learning rate")
     parser.add_argument('--weight-decay', type=float, default=5e-4)
-    parser.add_argument('--epochs', type=int, default=8)
-    parser.add_argument('--iters', type=int, default=150)
+    parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--iters', type=int, default=10)
     parser.add_argument('--step-size', type=int, default=20)
     # training configs
     parser.add_argument('--seed', type=int, default=1)
