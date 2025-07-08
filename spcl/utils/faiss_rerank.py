@@ -25,12 +25,14 @@ def k_reciprocal_neigh(initial_rank, i, k1):
     fi = np.where(backward_k_neigh_index==i)[0]
     return forward_k_neigh_index[fi]
 
-def compute_jaccard_distance(target_features, k1=20, k2=6, print_flag=True, search_option=0, use_float16=False):
+def compute_jaccard_distance(target_features, k1=20, k2=6, print_flag=True, search_option=3, use_float16=False):
+    print(f"[faiss_rerank] search_option = {search_option}")
     end = time.time()
     if print_flag:
         print('Computing jaccard distance...')
 
-    ngpus = faiss.get_num_gpus()
+    #ngpus = faiss.get_num_gpus()
+    ngpus=0
     N = target_features.size(0)
     mat_type = np.float16 if use_float16 else np.float32
 
@@ -55,7 +57,8 @@ def compute_jaccard_distance(target_features, k1=20, k2=6, print_flag=True, sear
         _, initial_rank = index.search(target_features.cpu().numpy(), k1)
     else:
         # CPU
-        index = index_init_cpu(target_features.size(-1))
+        #index = index_init_cpu(target_features.size(-1))
+        index = faiss.IndexFlatL2(target_features.size(-1))
         index.add(target_features.cpu().numpy())
         _, initial_rank = index.search(target_features.cpu().numpy(), k1)
 

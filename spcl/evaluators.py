@@ -13,7 +13,8 @@ from .utils.rerank import re_ranking
 from .utils import to_torch
 
 def extract_cnn_feature(model, inputs):
-    inputs = to_torch(inputs).cuda()
+    #inputs = to_torch(inputs).cuda()
+    inputs = to_torch(inputs) 
     outputs = model(inputs)
     outputs = outputs.data.cpu()
     return outputs
