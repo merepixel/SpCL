@@ -31,74 +31,47 @@ from spcl.utils.logging import Logger
 from spcl.utils.serialization import load_checkpoint, save_checkpoint, copy_state_dict
 from spcl.utils.faiss_rerank import compute_jaccard_distance
 
+# -------- device helper ---------------------------------
+device = (
+    torch.device("mps") if torch.backends.mps.is_available()
+    else torch.device("cuda") if torch.cuda.is_available()
+    else torch.device("cpu")
+)
+#print(f"Using device: {device}")
+# ---------------------------------------------------------
 
 start_epoch = best_mAP = 0
 
-def jaccard_rerank(features, k1=20, k2=6, use_cosine=True):
-    """
-    Pure-Python k-reciprocal + Jaccard re-ranking.
-    features: (N, D) np.ndarray
-    Returns: (N, N) distance matrix
-    """
-    # 1) initial distance matrix
-    if use_cosine:
-        # normalize to unit length, then dot → cosine similarities
-        norms = np.linalg.norm(features, axis=1, keepdims=True)
-        feats = features / (norms + 1e-12)
-        sim = np.dot(feats, feats.T)
-        dist = 1.0 - sim
-    else:
-        dist = cdist(features, features, metric='euclidean')
 
-    N = dist.shape[0]
-    initial_rank = np.argsort(dist, axis=1)
-
-    # 2) build k-reciprocal sets
-    k_half = k1 // 2
-    V = np.zeros_like(dist, dtype=np.float32)
-
-    for i in range(N):
-        forward = initial_rank[i, :k1+1]
-        backward = initial_rank[forward, :k1+1]
-        # mutual neighbours
-        recip = forward[np.where(backward == i)[0]]
-
-        # expansion step
-        recip_exp = recip.copy()
-        for j in recip:
-            f2 = initial_rank[j, :k_half+1]
-            b2 = initial_rank[f2, :k_half+1]
-            recip2 = f2[np.where(b2 == j)[0]]
-            if len(np.intersect1d(recip2, recip)) > (2/3)*len(recip2):
-                recip_exp = np.unique(np.concatenate([recip_exp, recip2]))
-
-        # soft weights on those neighbours
-        d_i = dist[i, recip_exp]
-        w = np.exp(-d_i)
-        V[i, recip_exp] = w / (w.sum() + 1e-12)
-
-    # 3) query expansion (optional)
-    if k2 > 1:
-        V_qe = np.zeros_like(V, dtype=np.float32)
-        for i in range(N):
-            V_qe[i] = V[initial_rank[i, :k2]].mean(axis=0)
-        V = V_qe
-
-    # 4) Jaccard distance
-    jaccard = np.zeros_like(dist, dtype=np.float32)
-    for i in range(N):
-        min_ = np.minimum(V[i], V)
-        max_ = np.maximum(V[i], V)
-        jaccard[i] = 1.0 - (min_.sum(axis=1) / (max_.sum(axis=1) + 1e-12))
-
-    return jaccard
-
-# Wraps spcl.datasets.create and returns a dataset object 
-# whose train, query, gallery, images_dir attributes match the Market-1501/DUKE/etc. 
 def get_data(name, data_dir):
     root = osp.join(data_dir, name)
     dataset = datasets.create(name, root)
     return dataset
+
+
+# ----------------- insert here -----------------
+def subsample_dataset(ds, num_ids=10, max_per_split=None, seed=42):
+    """
+    Keep `num_ids` identities and (optionally) cap each split
+    at `max_per_split` images.  Modifies the Dataset object in-place.
+    """
+    random.seed(seed)
+
+    all_pids   = list({pid for _, pid, _ in ds.train})
+    keep_pids  = set(random.sample(all_pids, k=num_ids))
+
+    ds.train   = [x for x in ds.train   if x[1] in keep_pids]
+    ds.query   = [x for x in ds.query   if x[1] in keep_pids]
+    ds.gallery = [x for x in ds.gallery if x[1] in keep_pids]
+
+    if max_per_split is not None:
+        ds.train   = ds.train[:max_per_split]
+        ds.query   = ds.query[:max_per_split]
+        ds.gallery = ds.gallery[:max_per_split]
+
+    print(f"Sub-sampled to {len(keep_pids)} IDs | "
+          f"{len(ds.train)} train / {len(ds.query)} query / {len(ds.gallery)} gallery images")
+# ------------------------------------------
 
 
 # Builds an IterLoader that loops over a DataLoader forever 
@@ -157,24 +130,20 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
 # The model is wrapped in nn.DataParallel and moved to CUDA.
 def create_model(args):
     model = models.create(args.arch, num_features=args.features, norm=True, dropout=args.dropout, num_classes=0)
-    # use CUDA
-    #model.cuda()
-    #model = nn.DataParallel(model)
-    model = model.to(args.device)
+    model.to(device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
     return model
 
 
-def main():
-    #args = parser.parse_args()
-    parser.add_argument('--device', default='cpu', help="torch device (cpu only)")
+def main():   
     args = parser.parse_args()
-    args.device = 'cpu'
 
     if args.seed is not None:
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
-        #cudnn.deterministic = True
+        cudnn.deterministic = True
 
     main_worker(args)
 
@@ -183,7 +152,7 @@ def main_worker(args):
     global start_epoch, best_mAP
     start_time = time.monotonic()
 
-    #cudnn.benchmark = False
+    cudnn.benchmark = True
 
     sys.stdout = Logger(osp.join(args.logs_dir, 'log.txt'))
     print("==========\nArgs:{}\n==========".format(args))
@@ -192,28 +161,7 @@ def main_worker(args):
     iters = args.iters if (args.iters>0) else None
     print("==> Load unlabeled dataset")
     dataset = get_data(args.dataset, args.data_dir)
-
-    import random
-    from collections import defaultdict
-
-    # ——— START quick subset by identity ———
-    random.seed(42)
-
-    # 1) pick 10 IDs at random
-    all_pids     = list({ pid for _, pid, _ in dataset.train })
-    sampled_pids = set(random.sample(all_pids, k=10))
-
-    # 2) filter each split to only those IDs
-    dataset.train   = [x for x in dataset.train   if x[1] in sampled_pids]
-    dataset.query   = [x for x in dataset.query   if x[1] in sampled_pids]
-    dataset.gallery = [x for x in dataset.gallery if x[1] in sampled_pids]
-
-    # (optional) if you also want to cap each split to 100 images total:
-    dataset.train   = dataset.train[:200]
-    dataset.query   = dataset.query[:200]
-    dataset.gallery = dataset.gallery[:200]
-    # ——— END quick subset ———
-
+    subsample_dataset(dataset, num_ids=10, max_per_split=200)
 
     test_loader = get_test_loader(dataset, args.height, args.width, args.batch_size, args.workers)
 
@@ -227,7 +175,7 @@ def main_worker(args):
             len(dataset.train),
             temp=args.temp,
             momentum=args.momentum
-        ).to(args.device)
+        ).to(device)
 
     # Initialize target-domain instance features
     print("==> Initialize instance features in the hybrid memory")
@@ -235,8 +183,7 @@ def main_worker(args):
                                     args.batch_size, args.workers, testset=sorted(dataset.train))
     features, _ = extract_features(model, cluster_loader, print_freq=50)
     features = torch.cat([features[f].unsqueeze(0) for f, _, _ in sorted(dataset.train)], 0)
-    #memory.features = F.normalize(features, dim=1).cuda()
-    memory.features = F.normalize(features, dim=1).to(args.device)
+    memory.features = F.normalize(features, dim=1).to(device)
 
     del cluster_loader, features
 
@@ -249,20 +196,15 @@ def main_worker(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=0.1)
 
     # Trainer
-    trainer = SpCLTrainer_USL(model, memory)
+    trainer = SpCLTrainer_USL(model, memory, device)
 
     for epoch in range(args.epochs):
 
         print('==> Create pseudo labels for unlabeled data with self-paced policy')
-        features = memory.features.clone().cpu().numpy()
 
-        rerank_dist = jaccard_rerank(
-            features,
-            k1=args.k1,
-            k2=args.k2,
-            use_cosine=True     
-        )
-                
+        features = memory.features.clone().to(device) 
+        rerank_dist = compute_jaccard_distance(features, k1=args.k1, k2=args.k2)
+
         del features
 
         if (epoch==0):
@@ -343,8 +285,7 @@ def main_worker(args):
         print('==> Statistics for epoch {}: {} clusters, {} un-clustered instances, R_indep threshold is {}'
                     .format(epoch, (index2label>1).sum(), (index2label==1).sum(), 1-indep_thres))
 
-        #memory.labels = pseudo_labels.cuda()
-        memory.labels = pseudo_labels.to(args.device)
+        memory.labels = pseudo_labels.to(device)
 
         train_loader = get_train_loader(args, dataset, args.height, args.width,
                                             args.batch_size, args.workers, args.num_instances, iters,

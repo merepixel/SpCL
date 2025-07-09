@@ -92,10 +92,11 @@ class SpCLTrainer_UDA(object):
 
 
 class SpCLTrainer_USL(object):
-    def __init__(self, encoder, memory):
+    def __init__(self, encoder, memory, device=torch.device("cpu")):
         super(SpCLTrainer_USL, self).__init__()
         self.encoder = encoder
         self.memory = memory
+        self.device = device  
 
     def train(self, epoch, data_loader, optimizer, print_freq=1, train_iters=400):
         self.encoder.train()
@@ -142,8 +143,7 @@ class SpCLTrainer_USL(object):
 
     def _parse_data(self, inputs):
         imgs, _, pids, _, indexes = inputs
-        #return imgs.cuda(), pids.cuda(), indexes.cuda()
-        return imgs.cpu(), pids.cpu(), indexes.cpu()
+        return imgs.to(self.device), pids.to(self.device), indexes.to(self.device)
 
     def _forward(self, inputs):
         return self.encoder(inputs)
