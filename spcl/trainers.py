@@ -8,6 +8,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from .utils.meters import AverageMeter
+from torch.cuda.amp import autocast, GradScaler
+
 
 
 class SpCLTrainer_UDA(object):
@@ -16,6 +18,7 @@ class SpCLTrainer_UDA(object):
         self.encoder = encoder
         self.memory = memory
         self.source_classes = source_classes
+        self.scaler = GradScaler()
 
     def train(self, epoch, data_loader_source, data_loader_target,
                     optimizer, print_freq=10, train_iters=400):
@@ -46,22 +49,26 @@ class SpCLTrainer_UDA(object):
             s_inputs, t_inputs = reshape(s_inputs), reshape(t_inputs)
             inputs = torch.cat((s_inputs, t_inputs), 1).view(-1, C, H, W)
 
-            # forward
-            f_out = self._forward(inputs)
+            # === AMP on encoder only ===
+            optimizer.zero_grad()
+            with autocast():
+                f_out = self._forward(inputs)
 
-            # de-arrange batch
+            # de-arrange in FP16 (still OK to split)
             f_out = f_out.view(device_num, -1, f_out.size(-1))
             f_out_s, f_out_t = f_out.split(f_out.size(1)//2, dim=1)
-            f_out_s, f_out_t = f_out_s.contiguous().view(-1, f_out.size(-1)), f_out_t.contiguous().view(-1, f_out.size(-1))
+            f_out_s = f_out_s.contiguous().view(-1, f_out.size(-1))
+            f_out_t = f_out_t.contiguous().view(-1, f_out.size(-1))
 
-            # compute loss with the hybrid memory
+            # === compute losses in full precision ===
             loss_s = self.memory(f_out_s, s_targets)
-            loss_t = self.memory(f_out_t, t_indexes+self.source_classes)
+            loss_t = self.memory(f_out_t, t_indexes + self.source_classes)
+            loss   = loss_s + loss_t
 
-            loss = loss_s+loss_t
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # === scale backward & step ===
+            self.scaler.scale(loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
 
             losses_s.update(loss_s.item())
             losses_t.update(loss_t.item())
@@ -97,6 +104,7 @@ class SpCLTrainer_USL(object):
         self.encoder = encoder
         self.memory = memory
         self.device = device  
+        self.scaler = GradScaler()
 
     def train(self, epoch, data_loader, optimizer, print_freq=1, train_iters=400):
         self.encoder.train()
@@ -115,15 +123,16 @@ class SpCLTrainer_USL(object):
             # process inputs
             inputs, _, indexes = self._parse_data(inputs)
 
-            # forward
-            f_out = self._forward(inputs)
-
-            # compute loss with the hybrid memory
-            loss = self.memory(f_out, indexes)
-
+            # === AMP on encoder only ===
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            with autocast():
+                f_out = self._forward(inputs)
+
+            # === full-precision loss & backward ===
+            loss = self.memory(f_out, indexes)
+            self.scaler.scale(loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
 
             losses.update(loss.item())
 
