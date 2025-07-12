@@ -163,10 +163,22 @@ def main_worker(args):
     dataset = get_data(args.dataset, args.data_dir)
     subsample_dataset(dataset, num_ids=10, max_per_split=200)
 
+
     test_loader = get_test_loader(dataset, args.height, args.width, args.batch_size, args.workers)
 
     # Create model
     model = create_model(args)
+
+    resume_path = osp.join(args.logs_dir, 'checkpoint.pth.tar')
+    if osp.exists(resume_path):
+        print(f"==> Loading checkpoint from: {resume_path}")
+        checkpoint = load_checkpoint(resume_path)
+        model.load_state_dict(checkpoint['state_dict'])
+        start_epoch = checkpoint.get('epoch', 0)
+        best_mAP = checkpoint.get('best_mAP', 0)
+        print(f"==> Resumed at epoch {start_epoch}, best mAP so far: {best_mAP:.2%}")
+    else:
+        print("==> No checkpoint found. Training from scratch.")
 
     # Create hybrid memory
     #memory = HybridMemory(model.module.num_features, len(dataset.train), temp=args.temp, momentum=args.momentum).cuda()
@@ -198,8 +210,9 @@ def main_worker(args):
     # Trainer
     trainer = SpCLTrainer_USL(model, memory, device)
 
-    for epoch in range(args.epochs):
+    cluster = DBSCAN(eps=args.eps,min_samples=4,metric='precomputed',n_jobs=-1)
 
+    for epoch in range(start_epoch, args.epochs):
         print('==> Create pseudo labels for unlabeled data with self-paced policy')
 
         features = memory.features.clone().to(device) 

@@ -91,8 +91,7 @@ class SpCLTrainer_UDA(object):
 
     def _parse_data(self, inputs):
         imgs, _, pids, _, indexes = inputs
-        #return imgs.cuda(), pids.cuda(), indexes.cuda()
-        return imgs.cpu(), pids.cpu(), indexes.cpu()
+        return imgs.cuda(), pids.cuda(), indexes.cuda()
 
     def _forward(self, inputs):
         return self.encoder(inputs)
