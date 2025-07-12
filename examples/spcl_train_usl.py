@@ -37,7 +37,7 @@ device = (
     else torch.device("cuda") if torch.cuda.is_available()
     else torch.device("cpu")
 )
-#print(f"Using device: {device}")
+print(f"Using device: {device}")
 # ---------------------------------------------------------
 
 start_epoch = best_mAP = 0
